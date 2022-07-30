@@ -1727,10 +1727,6 @@ UniValue gettxout(const Config &config, const JSONRPCRequest &request) {
         fMempool = request.params[2].get_bool();
     }
 
-    // cs_main locked here just to preserve locking order
-    // once it is removed from writeCoin lambda it can be
-    // deleted here as well
-    LOCK(cs_main);
     CoinsDBView tipView{*pcoinsTip};
 
     auto writeCoin =
@@ -1816,7 +1812,8 @@ void gettxouts(const Config& config,
             "In case where we cannot get coin we return element: {\"error\" : \"missing\"}\n"
             "In case where coin is in mempool, but is spent we return element: {\"error\" : \"spent\", \n"
             "\"collidedWith\" : {\"txid\" : txid, \"size\" : size, \"hex\" : hex }} \n"
-            "collidedWith contains a transaction id, size and hex of transaction that spends TXO. \n"
+            "collidedWith contains a transaction id, size and hex of transaction that spends TXO. Hex field is not present in output "
+            "if transaction already appeared in collidedWith. \n"
 
             "\nExamples:\n"
             "\nGet unspent transactions\n" +
@@ -1946,10 +1943,6 @@ void gettxouts(const Config& config,
     jWriter.writeBeginObject("result");
     jWriter.writeBeginArray("txouts");
 
-    // cs_main locked here just to preserve locking order
-    // once it is removed from writeCoin lambda it can be
-    // deleted here as well
-    LOCK(cs_main);
     CoinsDBView tipView{ *pcoinsTip };
 
     auto writeCoin =
@@ -1997,6 +1990,7 @@ void gettxouts(const Config& config,
 
     if (fMempool)
     {
+        std::set<TxId> missingTxIds;
         for(size_t arrayIndex = 0; arrayIndex < outPoints.size(); arrayIndex++)
         {
             jWriter.writeBeginObject();
@@ -2014,7 +2008,15 @@ void gettxouts(const Config& config,
                 jWriter.writeBeginObject("collidedWith");
                 jWriter.pushKV("txid", tx->GetId().GetHex());
                 jWriter.pushKV("size", int64_t(tx->GetTotalSize()));
-                jWriter.pushKV("hex", EncodeHexTx(*tx));
+                if(missingTxIds.insert(tx->GetId()).second)
+                {
+                    jWriter.pushK("hex");
+                    jWriter.pushQuote();
+                    jWriter.flush();
+                    // EncodeHexTx supports streaming (large transaction's hex should be chunked)
+                    EncodeHexTx(*tx, jWriter.getWriter(), RPCSerializationFlags());
+                    jWriter.pushQuote();
+                }
                 jWriter.writeEndObject();
             }
             else
